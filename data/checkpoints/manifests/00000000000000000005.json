@@ -1,0 +1,54 @@
+{
+  "version" : 5,
+  "previousVersion" : 4,
+  "createdAtMs" : 1777327148336,
+  "offsets" : {
+    "feature-events:1" : 125530,
+    "feature-events:0" : 126180,
+    "feature-events:7" : 124510,
+    "feature-events:6" : 123240,
+    "feature-events:3" : 125430,
+    "feature-events:2" : 124750,
+    "feature-events:5" : 124610,
+    "feature-events:4" : 125750
+  },
+  "ssts" : [ {
+    "name" : "000058.sst",
+    "sizeBytes" : 38261344,
+    "sha256" : "c8fcb7f8a892e531fdbabf767f407ca72b201069dc69a2867910ec1b63d555cc"
+  }, {
+    "name" : "000059.sst",
+    "sizeBytes" : 64675247,
+    "sha256" : "d964ae42e4dd75736bf3917ca13de75c7f144c66925b3bbed889e79d4b46a048"
+  }, {
+    "name" : "000057.sst",
+    "sizeBytes" : 65475093,
+    "sha256" : "7186e682f50824fed9e4e9ca1eafc118053fe44227cd530c2b30ee79d2066502"
+  }, {
+    "name" : "000056.sst",
+    "sizeBytes" : 67310879,
+    "sha256" : "a01fd05ea37e273128d39234dacde5aaf09f9f966ad7c15289d53c2f97dae03f"
+  }, {
+    "name" : "000054.sst",
+    "sizeBytes" : 67314433,
+    "sha256" : "1e29e9c2daf69321335ebff2cca50d55f201333767d73911dacdf67837c71c2b"
+  }, {
+    "name" : "000055.sst",
+    "sizeBytes" : 65439388,
+    "sha256" : "3ec25c15187c032e64a1638c0d1bcf1008869b501fb130ad7fef3597ef100e03"
+  } ],
+  "metaFiles" : [ {
+    "name" : "OPTIONS-000007",
+    "sizeBytes" : 7577
+  }, {
+    "name" : "000004.log",
+    "sizeBytes" : 0
+  }, {
+    "name" : "CURRENT",
+    "sizeBytes" : 16
+  }, {
+    "name" : "MANIFEST-000005",
+    "sizeBytes" : 6475
+  } ],
+  "totalSizeBytes" : 368490452
+}

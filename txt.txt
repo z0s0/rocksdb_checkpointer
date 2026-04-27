@@ -1,0 +1,3 @@
+  docker compose up -d                                               # Kafka on localhost:9092
+  java -jar bench-producer/target/bench-producer-0.1.0-SNAPSHOT.jar  # populate the topic
+  java -jar state-builder/target/state-builder-0.1.0-SNAPSHOT.jar

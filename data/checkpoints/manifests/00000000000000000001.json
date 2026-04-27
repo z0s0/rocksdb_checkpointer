@@ -1,0 +1,70 @@
+{
+  "version" : 1,
+  "previousVersion" : -1,
+  "createdAtMs" : 1777326907863,
+  "offsets" : {
+    "feature-events:1" : 125530,
+    "feature-events:0" : 126180,
+    "feature-events:7" : 124510,
+    "feature-events:6" : 123240,
+    "feature-events:3" : 125430,
+    "feature-events:2" : 124750,
+    "feature-events:5" : 124610,
+    "feature-events:4" : 125750
+  },
+  "ssts" : [ {
+    "name" : "000049.sst",
+    "sizeBytes" : 67313537,
+    "sha256" : "8bc9ad7373ae8b3541d9008afb696e5209cda4e9c4e38d5fbc3618862ab9c7cb"
+  }, {
+    "name" : "000048.sst",
+    "sizeBytes" : 65145051,
+    "sha256" : "c9806f63ada089f41a16c20041157fb8dd479f7ef2e6916874155fd441e72213"
+  }, {
+    "name" : "000058.sst",
+    "sizeBytes" : 38261344,
+    "sha256" : "c8fcb7f8a892e531fdbabf767f407ca72b201069dc69a2867910ec1b63d555cc"
+  }, {
+    "name" : "000057.sst",
+    "sizeBytes" : 65475093,
+    "sha256" : "7186e682f50824fed9e4e9ca1eafc118053fe44227cd530c2b30ee79d2066502"
+  }, {
+    "name" : "000055.sst",
+    "sizeBytes" : 65439388,
+    "sha256" : "3ec25c15187c032e64a1638c0d1bcf1008869b501fb130ad7fef3597ef100e03"
+  }, {
+    "name" : "000051.sst",
+    "sizeBytes" : 64672984,
+    "sha256" : "b4bc8fccd510b0b633865f20b9f65c0dea97d31cd518c5e0ba5502798ce7a7b4"
+  }, {
+    "name" : "000050.sst",
+    "sizeBytes" : 65152888,
+    "sha256" : "5c87943a32c97bd1bf128a9c5a69a45f5a197ff5218270a91c29b1d4bf31115d"
+  }, {
+    "name" : "000052.sst",
+    "sizeBytes" : 65195752,
+    "sha256" : "3819a8b4144eda338915e738ffdd61020aaa207261ebc140561e08eded21cfd7"
+  }, {
+    "name" : "000047.sst",
+    "sizeBytes" : 67314720,
+    "sha256" : "18bc4aedcaa0a4d587d871013495360bc28bb3783935fcfeac6a1e9645898aa0"
+  }, {
+    "name" : "000053.sst",
+    "sizeBytes" : 65408929,
+    "sha256" : "b7fe196bf2b826a793e2dc8a96fe9dfd2fba09832c7610b78851281f35d7979f"
+  } ],
+  "metaFiles" : [ {
+    "name" : "OPTIONS-000007",
+    "sizeBytes" : 7577
+  }, {
+    "name" : "000004.log",
+    "sizeBytes" : 0
+  }, {
+    "name" : "CURRENT",
+    "sizeBytes" : 16
+  }, {
+    "name" : "MANIFEST-000005",
+    "sizeBytes" : 6154
+  } ],
+  "totalSizeBytes" : 629393433
+}
