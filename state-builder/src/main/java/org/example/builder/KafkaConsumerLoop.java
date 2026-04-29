@@ -1,19 +1,20 @@
 package org.example.builder;
 
-import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.example.checkpoint.CheckpointManager;
 import org.example.checkpoint.Manifest;
 import org.example.checkpoint.OffsetSupplier;
+import org.example.checkpoint.ShardAssignment;
 import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.Collection;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +26,7 @@ public final class KafkaConsumerLoop implements Runnable, OffsetSupplier {
 
     private final KafkaConsumer<byte[], byte[]> consumer;
     private final List<String> topics;
+    private final ShardAssignment shard;
     private final RocksDbStore rocks;
     private final CheckpointManager checkpointManager;
     private final long checkpointIntervalMs;
@@ -35,6 +37,7 @@ public final class KafkaConsumerLoop implements Runnable, OffsetSupplier {
     public KafkaConsumerLoop(
             KafkaConsumer<byte[], byte[]> consumer,
             List<String> topics,
+            ShardAssignment shard,
             RocksDbStore rocks,
             CheckpointManager checkpointManager,
             long checkpointIntervalMs,
@@ -42,6 +45,7 @@ public final class KafkaConsumerLoop implements Runnable, OffsetSupplier {
     ) {
         this.consumer = consumer;
         this.topics = topics;
+        this.shard = shard;
         this.rocks = rocks;
         this.checkpointManager = checkpointManager;
         this.checkpointIntervalMs = checkpointIntervalMs;
@@ -64,12 +68,27 @@ public final class KafkaConsumerLoop implements Runnable, OffsetSupplier {
 
     @Override
     public void run() {
-        consumer.subscribe(topics, new SeekToManifestListener());
-        long lastCheckpointMs = System.currentTimeMillis();
-        long recordsSinceCheckpoint = 0;
-        long totalRecords = 0;
-
         try {
+            List<TopicPartition> owned = computeOwnedPartitions();
+            if (owned.isEmpty()) {
+                LOG.warn("{} owns no partitions across topics {} — running idle",
+                        shard.describe(), topics);
+            } else {
+                LOG.info("{} owns {} partitions: {}", shard.describe(), owned.size(), owned);
+            }
+
+            Manifest latest = checkpointManager.latestCommitted();
+            if (latest != null) {
+                shard.assertOwns(latest);
+            }
+
+            consumer.assign(owned);
+            seekOwnedPartitions(owned, latest);
+
+            long lastCheckpointMs = System.currentTimeMillis();
+            long recordsSinceCheckpoint = 0;
+            long totalRecords = 0;
+
             while (!stopped.get()) {
                 ConsumerRecords<byte[], byte[]> records;
                 try {
@@ -120,26 +139,37 @@ public final class KafkaConsumerLoop implements Runnable, OffsetSupplier {
         }
     }
 
-    private final class SeekToManifestListener implements ConsumerRebalanceListener {
-        @Override
-        public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
-            // No-op: our offsets live in the manifest; nothing to commit to Kafka.
-        }
-
-        @Override
-        public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
-            Manifest latest = checkpointManager.latestCommitted();
-            Map<String, Long> manifestOffsets = latest != null ? latest.offsets() : Map.of();
-            for (TopicPartition tp : partitions) {
-                Long off = manifestOffsets.get(tp.topic() + ":" + tp.partition());
-                if (off != null) {
-                    consumer.seek(tp, off);
-                    LOG.info("seek {}-{} -> {} (from manifest v{})", tp.topic(), tp.partition(), off, latest.version());
-                } else {
-                    consumer.seekToBeginning(List.of(tp));
-                    LOG.info("seek {}-{} -> beginning (no manifest entry)", tp.topic(), tp.partition());
-                }
+    private List<TopicPartition> computeOwnedPartitions() {
+        List<TopicPartition> owned = new ArrayList<>();
+        for (String topic : topics) {
+            List<PartitionInfo> infos = consumer.partitionsFor(topic);
+            if (infos == null || infos.isEmpty()) {
+                throw new IllegalStateException("topic not found or has no partitions: " + topic);
             }
+            int total = infos.size();
+            for (int p : shard.ownedPartitions(total)) {
+                owned.add(new TopicPartition(topic, p));
+            }
+        }
+        return owned;
+    }
+
+    private void seekOwnedPartitions(List<TopicPartition> owned, Manifest manifest) {
+        Map<String, Long> manifestOffsets = manifest != null ? manifest.offsets() : Map.of();
+        List<TopicPartition> toSeekBeginning = new ArrayList<>();
+        for (TopicPartition tp : owned) {
+            String key = tp.topic() + ":" + tp.partition();
+            Long off = manifestOffsets.get(key);
+            if (off != null) {
+                consumer.seek(tp, off);
+                LOG.info("seek {} -> {} (manifest v{})", tp, off, manifest.version());
+            } else {
+                toSeekBeginning.add(tp);
+                LOG.info("seek {} -> beginning (no manifest entry)", tp);
+            }
+        }
+        if (!toSeekBeginning.isEmpty()) {
+            consumer.seekToBeginning(toSeekBeginning);
         }
     }
 }

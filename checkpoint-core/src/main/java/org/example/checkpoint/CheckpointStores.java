@@ -1,6 +1,7 @@
 package org.example.checkpoint;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 
 public final class CheckpointStores {
@@ -9,11 +10,20 @@ public final class CheckpointStores {
     }
 
     public static CheckpointStore fromEnv() throws IOException {
+        return fromEnv(ShardAssignment.fromEnv());
+    }
+
+    public static CheckpointStore fromEnv(ShardAssignment shard) throws IOException {
         String type = env("CHECKPOINT_STORE_TYPE", "local").toLowerCase();
         return switch (type) {
-            case "local" -> new LocalFsCheckpointStore(
-                    Paths.get(env("CHECKPOINT_STORE_DIR", "./data/checkpoints")));
-            case "s3" -> S3CheckpointStore.fromEnv();
+            case "local" -> {
+                Path root = Paths.get(env("CHECKPOINT_STORE_DIR", "./data/checkpoints"));
+                Path effective = shard != null && shard.isSharded()
+                        ? root.resolve(shard.pathSegment())
+                        : root;
+                yield new LocalFsCheckpointStore(effective);
+            }
+            case "s3" -> S3CheckpointStore.fromEnv(shard);
             default -> throw new IllegalArgumentException("unknown CHECKPOINT_STORE_TYPE: " + type);
         };
     }

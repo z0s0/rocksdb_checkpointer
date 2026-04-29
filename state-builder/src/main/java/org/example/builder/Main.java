@@ -17,12 +17,12 @@ public final class Main {
 
     public static void main(String[] args) throws Exception {
         Config cfg = Config.fromEnv();
-        LOG.info("starting state-builder topics={} bootstrap={} dataDir={} storeType={}",
-                cfg.kafkaTopics, cfg.kafkaBootstrap, cfg.rocksDbDataDir,
+        LOG.info("starting state-builder shard={} topics={} bootstrap={} dataDir={} storeType={}",
+                cfg.shard.describe(), cfg.kafkaTopics, cfg.kafkaBootstrap, cfg.rocksDbDataDir,
                 System.getenv().getOrDefault("CHECKPOINT_STORE_TYPE", "local"));
 
         RocksDbStore rocks = new RocksDbStore(cfg.rocksDbDataDir, cfg.disableWal);
-        CheckpointStore store = CheckpointStores.fromEnv();
+        CheckpointStore store = CheckpointStores.fromEnv(cfg.shard);
 
         Properties props = new Properties();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, cfg.kafkaBootstrap);
@@ -50,7 +50,7 @@ public final class Main {
                 .build();
 
         KafkaConsumerLoop loop = new KafkaConsumerLoop(
-                consumer, cfg.kafkaTopics, rocks, mgr,
+                consumer, cfg.kafkaTopics, cfg.shard, rocks, mgr,
                 cfg.checkpointIntervalMs, cfg.checkpointMaxRecords);
         loopRef[0] = loop;
 

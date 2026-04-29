@@ -1,5 +1,7 @@
 package org.example.builder;
 
+import org.example.checkpoint.ShardAssignment;
+
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
@@ -23,6 +25,8 @@ public final class Config {
     public final int checkpointUploadParallelism;
     public final boolean checkpointComputeChecksums;
 
+    public final ShardAssignment shard;
+
     private Config() {
         this.kafkaTopics = List.of(env("KAFKA_TOPICS", "feature-events").split(","));
         this.kafkaBootstrap = env("KAFKA_BOOTSTRAP", "localhost:9092");
@@ -40,6 +44,8 @@ public final class Config {
         this.checkpointRetainLastN = Integer.parseInt(env("CHECKPOINT_RETAIN_LAST_N", "10"));
         this.checkpointUploadParallelism = Integer.parseInt(env("CHECKPOINT_UPLOAD_PARALLELISM", "8"));
         this.checkpointComputeChecksums = Boolean.parseBoolean(env("CHECKPOINT_COMPUTE_CHECKSUMS", "true"));
+
+        this.shard = ShardAssignment.fromEnv();
     }
 
     public static Config fromEnv() {

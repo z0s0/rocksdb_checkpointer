@@ -31,21 +31,28 @@ public final class Main {
 
     public static void main(String[] args) throws Exception {
         Config cfg = Config.fromEnv();
-        LOG.info("starting feature-server storeType={} restoreDir={} restoreVersion={} httpPort={} tailKafka={}",
+        LOG.info("starting feature-server shard={} storeType={} restoreDir={} restoreVersion={} httpPort={} tailKafka={}",
+                cfg.shard.describe(),
                 System.getenv().getOrDefault("CHECKPOINT_STORE_TYPE", "local"),
                 cfg.restoreDir, cfg.restoreVersion, cfg.httpPort, cfg.tailKafka);
 
-        CheckpointStore store = CheckpointStores.fromEnv();
+        CheckpointStore store = CheckpointStores.fromEnv(cfg.shard);
         Metrics metrics = new Metrics();
+
+        // Resolve manifest first and validate against shard before downloading anything.
+        Manifest manifest = (cfg.restoreVersion < 0
+                ? store.getLatestManifest()
+                : store.getManifest(cfg.restoreVersion))
+                .orElseThrow(() -> new IllegalStateException(
+                        "no manifest available in store for " + cfg.shard.describe()
+                                + (cfg.restoreVersion < 0 ? "" : " at version " + cfg.restoreVersion)));
+        cfg.shard.assertOwns(manifest);
 
         deleteRecursively(cfg.restoreDir);
         Files.createDirectories(cfg.restoreDir);
 
-        Manifest manifest;
         try (CheckpointRestorer restorer = new CheckpointRestorer(store, cfg.restoreParallelism, metrics)) {
-            manifest = cfg.restoreVersion < 0
-                    ? restorer.restoreLatest(cfg.restoreDir)
-                    : restorer.restore(cfg.restoreVersion, cfg.restoreDir);
+            restorer.restoreManifest(manifest, cfg.restoreDir);
         }
         // The store stays open in case the tailer needs it; closed on shutdown below.
 
@@ -64,7 +71,7 @@ public final class Main {
             props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
             props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, cfg.maxPollRecords);
             KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(props);
-            tailer = new KafkaTailer(consumer, cfg.kafkaTopics, db, manifest);
+            tailer = new KafkaTailer(consumer, cfg.kafkaTopics, cfg.shard, db, manifest);
             tailer.start();
         }
 

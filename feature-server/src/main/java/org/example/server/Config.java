@@ -1,5 +1,7 @@
 package org.example.server;
 
+import org.example.checkpoint.ShardAssignment;
+
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
@@ -19,6 +21,8 @@ public final class Config {
     public final String kafkaClientId;
     public final int maxPollRecords;
 
+    public final ShardAssignment shard;
+
     private Config() {
         this.restoreDir = Paths.get(env("RESTORE_DIR", "./data/restored-rocksdb"));
         this.restoreVersion = Long.parseLong(env("RESTORE_VERSION", "-1"));
@@ -32,6 +36,8 @@ public final class Config {
         this.kafkaGroupId = env("KAFKA_GROUP_ID", "feature-server");
         this.kafkaClientId = env("KAFKA_CLIENT_ID", "feature-server-1");
         this.maxPollRecords = Integer.parseInt(env("KAFKA_MAX_POLL_RECORDS", "5000"));
+
+        this.shard = ShardAssignment.fromEnv();
     }
 
     public static Config fromEnv() {

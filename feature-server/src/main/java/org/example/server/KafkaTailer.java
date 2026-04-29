@@ -1,11 +1,12 @@
 package org.example.server;
 
-import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.example.checkpoint.Manifest;
+import org.example.checkpoint.ShardAssignment;
 import org.rocksdb.RocksDB;
 import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
@@ -13,7 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.Collection;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +26,7 @@ public final class KafkaTailer implements Runnable, AutoCloseable {
 
     private final KafkaConsumer<byte[], byte[]> consumer;
     private final List<String> topics;
+    private final ShardAssignment shard;
     private final RocksDB db;
     private final WriteOptions writeOptions;
     private final Manifest seedManifest;
@@ -32,9 +34,16 @@ public final class KafkaTailer implements Runnable, AutoCloseable {
     private final Map<String, Long> currentOffsets = new HashMap<>();
     private Thread thread;
 
-    public KafkaTailer(KafkaConsumer<byte[], byte[]> consumer, List<String> topics, RocksDB db, Manifest seedManifest) {
+    public KafkaTailer(
+            KafkaConsumer<byte[], byte[]> consumer,
+            List<String> topics,
+            ShardAssignment shard,
+            RocksDB db,
+            Manifest seedManifest
+    ) {
         this.consumer = consumer;
         this.topics = topics;
+        this.shard = shard;
         this.db = db;
         this.writeOptions = new WriteOptions().setDisableWAL(true);
         this.seedManifest = seedManifest;
@@ -56,24 +65,18 @@ public final class KafkaTailer implements Runnable, AutoCloseable {
 
     @Override
     public void run() {
-        consumer.subscribe(topics, new ConsumerRebalanceListener() {
-            @Override public void onPartitionsRevoked(Collection<TopicPartition> p) {}
-            @Override public void onPartitionsAssigned(Collection<TopicPartition> tps) {
-                Map<String, Long> seed = seedManifest != null ? seedManifest.offsets() : Map.of();
-                for (TopicPartition tp : tps) {
-                    Long off = seed.get(tp.topic() + ":" + tp.partition());
-                    if (off != null) {
-                        consumer.seek(tp, off);
-                        LOG.info("tailer seek {}-{} -> {} (manifest)", tp.topic(), tp.partition(), off);
-                    } else {
-                        consumer.seekToEnd(List.of(tp));
-                        LOG.info("tailer seek {}-{} -> end (no manifest entry)", tp.topic(), tp.partition());
-                    }
-                }
-            }
-        });
-
         try {
+            List<TopicPartition> owned = computeOwnedPartitions();
+            if (owned.isEmpty()) {
+                LOG.warn("tailer {} owns no partitions across topics {} — exiting",
+                        shard.describe(), topics);
+                return;
+            }
+            LOG.info("tailer {} owns {} partitions: {}", shard.describe(), owned.size(), owned);
+
+            consumer.assign(owned);
+            seekOwnedPartitions(owned);
+
             while (!stopped.get()) {
                 ConsumerRecords<byte[], byte[]> records;
                 try {
@@ -117,6 +120,40 @@ public final class KafkaTailer implements Runnable, AutoCloseable {
         consumer.wakeup();
         if (thread != null) {
             try { thread.join(10_000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
+    }
+
+    private List<TopicPartition> computeOwnedPartitions() {
+        List<TopicPartition> owned = new ArrayList<>();
+        for (String topic : topics) {
+            List<PartitionInfo> infos = consumer.partitionsFor(topic);
+            if (infos == null || infos.isEmpty()) {
+                throw new IllegalStateException("topic not found or has no partitions: " + topic);
+            }
+            int total = infos.size();
+            for (int p : shard.ownedPartitions(total)) {
+                owned.add(new TopicPartition(topic, p));
+            }
+        }
+        return owned;
+    }
+
+    private void seekOwnedPartitions(List<TopicPartition> owned) {
+        Map<String, Long> seed = seedManifest != null ? seedManifest.offsets() : Map.of();
+        List<TopicPartition> toSeekEnd = new ArrayList<>();
+        for (TopicPartition tp : owned) {
+            String key = tp.topic() + ":" + tp.partition();
+            Long off = seed.get(key);
+            if (off != null) {
+                consumer.seek(tp, off);
+                LOG.info("tailer seek {} -> {} (manifest)", tp, off);
+            } else {
+                toSeekEnd.add(tp);
+                LOG.info("tailer seek {} -> end (no manifest entry)", tp);
+            }
+        }
+        if (!toSeekEnd.isEmpty()) {
+            consumer.seekToEnd(toSeekEnd);
         }
     }
 }

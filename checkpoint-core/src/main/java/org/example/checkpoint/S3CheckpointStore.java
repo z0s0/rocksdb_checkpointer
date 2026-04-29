@@ -5,6 +5,7 @@ import software.amazon.awssdk.core.async.AsyncRequestBody;
 import software.amazon.awssdk.core.async.AsyncResponseTransformer;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3AsyncClient;
+import software.amazon.awssdk.services.s3.S3AsyncClientBuilder;
 import software.amazon.awssdk.services.s3.model.Delete;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
@@ -46,14 +47,19 @@ public final class S3CheckpointStore implements CheckpointStore {
     }
 
     public static S3CheckpointStore fromEnv() {
+        return fromEnv(null);
+    }
+
+    public static S3CheckpointStore fromEnv(ShardAssignment shard) {
         String region = env("AWS_REGION", "us-east-1");
         String bucket = required("S3_BUCKET");
-        String prefix = env("S3_PREFIX", "");
+        String userPrefix = env("S3_PREFIX", "");
+        String prefix = composePrefix(userPrefix, shard);
         String endpoint = env("S3_ENDPOINT_URL", null);
         boolean pathStyle = Boolean.parseBoolean(env("S3_PATH_STYLE", "true"));
         long minPartBytes = Long.parseLong(env("S3_MIN_PART_BYTES", String.valueOf(8L * 1024 * 1024)));
 
-        S3AsyncClient.Builder b = S3AsyncClient.builder()
+        S3AsyncClientBuilder b = S3AsyncClient.builder()
                 .region(Region.of(region))
                 .multipartEnabled(true)
                 .multipartConfiguration(c -> c.minimumPartSizeInBytes(minPartBytes))
@@ -263,6 +269,18 @@ public final class S3CheckpointStore implements CheckpointStore {
         if (p == null || p.isBlank()) return "";
         if (p.startsWith("/")) p = p.substring(1);
         return p.endsWith("/") ? p : p + "/";
+    }
+
+    private static String composePrefix(String userPrefix, ShardAssignment shard) {
+        String base = userPrefix == null ? "" : userPrefix;
+        if (shard != null && shard.isSharded()) {
+            String seg = shard.pathSegment();
+            if (base.isBlank()) {
+                return seg;
+            }
+            return base.endsWith("/") ? base + seg : base + "/" + seg;
+        }
+        return base;
     }
 
     private static String env(String key, String def) {
