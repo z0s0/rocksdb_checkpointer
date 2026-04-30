@@ -1,5 +1,6 @@
 package org.example.server;
 
+import org.example.checkpoint.BandwidthLimiter;
 import org.example.checkpoint.ShardAssignment;
 
 import java.nio.file.Path;
@@ -11,6 +12,7 @@ public final class Config {
     public final Path restoreDir;
     public final long restoreVersion;          // -1 == latest
     public final int restoreParallelism;
+    public final long restoreBandwidthBytesPerSec;  // 0 = unlimited
     public final int httpPort;
     public final int httpThreads;
 
@@ -27,6 +29,7 @@ public final class Config {
         this.restoreDir = Paths.get(env("RESTORE_DIR", "./data/restored-rocksdb"));
         this.restoreVersion = Long.parseLong(env("RESTORE_VERSION", "-1"));
         this.restoreParallelism = Integer.parseInt(env("RESTORE_PARALLELISM", "8"));
+        this.restoreBandwidthBytesPerSec = BandwidthLimiter.parseRate(env("RESTORE_BANDWIDTH_BYTES_PER_SEC", "0"));
         this.httpPort = Integer.parseInt(env("HTTP_PORT", "8080"));
         this.httpThreads = Integer.parseInt(env("HTTP_THREADS", "16"));
 

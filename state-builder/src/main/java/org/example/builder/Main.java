@@ -3,6 +3,7 @@ package org.example.builder;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.example.checkpoint.BandwidthLimiter;
 import org.example.checkpoint.CheckpointManager;
 import org.example.checkpoint.CheckpointStore;
 import org.example.checkpoint.CheckpointStores;
@@ -39,6 +40,13 @@ public final class Main {
         // Build the loop first so we can use it as the OffsetSupplier in the manager.
         KafkaConsumerLoop[] loopRef = new KafkaConsumerLoop[1];
 
+        BandwidthLimiter uploadLimiter = cfg.uploadBandwidthBytesPerSec > 0
+                ? new BandwidthLimiter(cfg.uploadBandwidthBytesPerSec)
+                : null;
+        if (uploadLimiter != null) {
+            LOG.info("upload bandwidth limited to {} bytes/sec", cfg.uploadBandwidthBytesPerSec);
+        }
+
         CheckpointManager mgr = CheckpointManager.builder()
                 .db(rocks.raw())
                 .stagingRoot(cfg.checkpointStagingDir)
@@ -47,6 +55,7 @@ public final class Main {
                 .uploadParallelism(cfg.checkpointUploadParallelism)
                 .computeChecksums(cfg.checkpointComputeChecksums)
                 .retainLastN(cfg.checkpointRetainLastN)
+                .uploadBandwidthLimiter(uploadLimiter)
                 .build();
 
         KafkaConsumerLoop loop = new KafkaConsumerLoop(

@@ -3,6 +3,7 @@ package org.example.server;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.example.checkpoint.BandwidthLimiter;
 import org.example.checkpoint.CheckpointRestorer;
 import org.example.checkpoint.CheckpointStore;
 import org.example.checkpoint.CheckpointStores;
@@ -51,7 +52,14 @@ public final class Main {
         deleteRecursively(cfg.restoreDir);
         Files.createDirectories(cfg.restoreDir);
 
-        try (CheckpointRestorer restorer = new CheckpointRestorer(store, cfg.restoreParallelism, metrics)) {
+        BandwidthLimiter restoreLimiter = cfg.restoreBandwidthBytesPerSec > 0
+                ? new BandwidthLimiter(cfg.restoreBandwidthBytesPerSec)
+                : null;
+        if (restoreLimiter != null) {
+            LOG.info("restore bandwidth limited to {} bytes/sec", cfg.restoreBandwidthBytesPerSec);
+        }
+
+        try (CheckpointRestorer restorer = new CheckpointRestorer(store, cfg.restoreParallelism, metrics, restoreLimiter)) {
             restorer.restoreManifest(manifest, cfg.restoreDir);
         }
         // The store stays open in case the tailer needs it; closed on shutdown below.

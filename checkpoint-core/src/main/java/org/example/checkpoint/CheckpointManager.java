@@ -42,6 +42,7 @@ public final class CheckpointManager implements AutoCloseable {
     private final boolean computeChecksums;
     private final int retainLastN;
     private final Metrics metrics;
+    private final BandwidthLimiter uploadBandwidthLimiter;
 
     private Manifest prevManifest;
 
@@ -53,6 +54,7 @@ public final class CheckpointManager implements AutoCloseable {
         this.computeChecksums = b.computeChecksums;
         this.retainLastN = b.retainLastN;
         this.metrics = b.metrics != null ? b.metrics : new Metrics();
+        this.uploadBandwidthLimiter = b.uploadBandwidthLimiter;
         if (b.uploadExecutor != null) {
             this.uploadExecutor = b.uploadExecutor;
             this.ownsExecutor = false;
@@ -190,6 +192,7 @@ public final class CheckpointManager implements AutoCloseable {
         try {
             String name = p.getFileName().toString();
             long size = Files.size(p);
+            acquireUploadBandwidth(size);
             String sha = computeChecksums ? sha256(p) : null;
             store.putSst(name, p);
             return new SstEntry(name, size, sha);
@@ -202,10 +205,21 @@ public final class CheckpointManager implements AutoCloseable {
         try {
             String name = p.getFileName().toString();
             long size = Files.size(p);
+            acquireUploadBandwidth(size);
             store.putMetaFile(version, name, p);
             return new MetaEntry(name, size);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
+        }
+    }
+
+    private void acquireUploadBandwidth(long bytes) {
+        if (uploadBandwidthLimiter == null || bytes <= 0) return;
+        try {
+            uploadBandwidthLimiter.acquire(bytes);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("interrupted while waiting for upload bandwidth budget", ie);
         }
     }
 
@@ -257,6 +271,7 @@ public final class CheckpointManager implements AutoCloseable {
         private boolean computeChecksums = true;
         private int retainLastN = 10;
         private Metrics metrics;
+        private BandwidthLimiter uploadBandwidthLimiter;
 
         public Builder db(RocksDB db) { this.db = db; return this; }
         public Builder stagingRoot(Path p) { this.stagingRoot = p; return this; }
@@ -267,6 +282,7 @@ public final class CheckpointManager implements AutoCloseable {
         public Builder computeChecksums(boolean b) { this.computeChecksums = b; return this; }
         public Builder retainLastN(int n) { this.retainLastN = n; return this; }
         public Builder metrics(Metrics m) { this.metrics = m; return this; }
+        public Builder uploadBandwidthLimiter(BandwidthLimiter l) { this.uploadBandwidthLimiter = l; return this; }
 
         public CheckpointManager build() throws IOException {
             return new CheckpointManager(this);

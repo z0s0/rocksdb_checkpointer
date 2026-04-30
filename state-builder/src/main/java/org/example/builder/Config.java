@@ -1,5 +1,6 @@
 package org.example.builder;
 
+import org.example.checkpoint.BandwidthLimiter;
 import org.example.checkpoint.ShardAssignment;
 
 import java.nio.file.Path;
@@ -24,6 +25,7 @@ public final class Config {
     public final int checkpointRetainLastN;
     public final int checkpointUploadParallelism;
     public final boolean checkpointComputeChecksums;
+    public final long uploadBandwidthBytesPerSec;  // 0 = unlimited
 
     public final ShardAssignment shard;
 
@@ -44,6 +46,7 @@ public final class Config {
         this.checkpointRetainLastN = Integer.parseInt(env("CHECKPOINT_RETAIN_LAST_N", "10"));
         this.checkpointUploadParallelism = Integer.parseInt(env("CHECKPOINT_UPLOAD_PARALLELISM", "8"));
         this.checkpointComputeChecksums = Boolean.parseBoolean(env("CHECKPOINT_COMPUTE_CHECKSUMS", "true"));
+        this.uploadBandwidthBytesPerSec = BandwidthLimiter.parseRate(env("UPLOAD_BANDWIDTH_BYTES_PER_SEC", "0"));
 
         this.shard = ShardAssignment.fromEnv();
     }

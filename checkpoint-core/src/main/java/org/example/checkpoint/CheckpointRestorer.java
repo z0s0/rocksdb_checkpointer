@@ -25,20 +25,31 @@ public final class CheckpointRestorer implements AutoCloseable {
     private final ExecutorService executor;
     private final boolean ownsExecutor;
     private final Metrics metrics;
+    private final BandwidthLimiter bandwidthLimiter;
 
     public CheckpointRestorer(CheckpointStore store, int parallelism, Metrics metrics) {
-        this(store, Executors.newFixedThreadPool(parallelism, namedThreads("ckpt-download")), true, metrics);
+        this(store, parallelism, metrics, null);
+    }
+
+    public CheckpointRestorer(CheckpointStore store, int parallelism, Metrics metrics, BandwidthLimiter bandwidthLimiter) {
+        this(store, Executors.newFixedThreadPool(parallelism, namedThreads("ckpt-download")), true, metrics, bandwidthLimiter);
     }
 
     public CheckpointRestorer(CheckpointStore store, ExecutorService executor, Metrics metrics) {
-        this(store, executor, false, metrics);
+        this(store, executor, false, metrics, null);
     }
 
-    private CheckpointRestorer(CheckpointStore store, ExecutorService executor, boolean ownsExecutor, Metrics metrics) {
+    public CheckpointRestorer(CheckpointStore store, ExecutorService executor, Metrics metrics, BandwidthLimiter bandwidthLimiter) {
+        this(store, executor, false, metrics, bandwidthLimiter);
+    }
+
+    private CheckpointRestorer(CheckpointStore store, ExecutorService executor, boolean ownsExecutor,
+                               Metrics metrics, BandwidthLimiter bandwidthLimiter) {
         this.store = Objects.requireNonNull(store, "store");
         this.executor = Objects.requireNonNull(executor, "executor");
         this.ownsExecutor = ownsExecutor;
         this.metrics = metrics != null ? metrics : new Metrics();
+        this.bandwidthLimiter = bandwidthLimiter;
     }
 
     public Manifest restoreLatest(Path target) throws IOException {
@@ -65,6 +76,7 @@ public final class CheckpointRestorer implements AutoCloseable {
         for (SstEntry e : m.ssts()) {
             futures.add(CompletableFuture.runAsync(() -> {
                 try {
+                    acquireBandwidth(e.sizeBytes());
                     store.downloadSst(e.name(), target.resolve(e.name()));
                 } catch (IOException ex) {
                     throw new UncheckedIOException(ex);
@@ -74,6 +86,7 @@ public final class CheckpointRestorer implements AutoCloseable {
         for (MetaEntry e : m.metaFiles()) {
             futures.add(CompletableFuture.runAsync(() -> {
                 try {
+                    acquireBandwidth(e.sizeBytes());
                     store.downloadMetaFile(m.version(), e.name(), target.resolve(e.name()));
                 } catch (IOException ex) {
                     throw new UncheckedIOException(ex);
@@ -95,6 +108,16 @@ public final class CheckpointRestorer implements AutoCloseable {
     public void close() {
         if (ownsExecutor) {
             executor.shutdown();
+        }
+    }
+
+    private void acquireBandwidth(long bytes) {
+        if (bandwidthLimiter == null || bytes <= 0) return;
+        try {
+            bandwidthLimiter.acquire(bytes);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("interrupted while waiting for bandwidth budget", ie);
         }
     }
 
