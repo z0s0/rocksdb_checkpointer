@@ -8,9 +8,11 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -102,6 +104,118 @@ public final class CheckpointRestorer implements AutoCloseable {
         LOG.info("restored manifest v{} ({} ssts, {} meta, {} bytes) in {} ms",
                 m.version(), m.ssts().size(), m.metaFiles().size(), m.totalSizeBytes(), totalNs / 1_000_000);
         return m;
+    }
+
+    /**
+     * Diff-based refresh from {@code currentManifest} to {@code targetManifest}.
+     * SSTs reused between the two manifests are hard-linked from {@code liveDir}
+     * into {@code nextDir} (no I/O). New SSTs and all meta files for the target
+     * version are downloaded into {@code nextDir} in parallel. The caller is
+     * responsible for opening RocksDB on {@code nextDir} and disposing of
+     * {@code liveDir} after a successful swap.
+     *
+     * <p>Peak disk while running: live DB + delta. The hard links keep reused
+     * SSTs from being copied. If hard-linking is unavailable (cross-filesystem),
+     * falls back to a copy with a warning.
+     *
+     * <p>If a reused SST is missing from {@code liveDir} (e.g. corruption),
+     * it is treated as a new SST and downloaded.
+     */
+    public Manifest refresh(
+            Manifest currentManifest,
+            Manifest targetManifest,
+            Path liveDir,
+            Path nextDir
+    ) throws IOException {
+        Objects.requireNonNull(currentManifest, "currentManifest");
+        Objects.requireNonNull(targetManifest, "targetManifest");
+        Objects.requireNonNull(liveDir, "liveDir");
+        Objects.requireNonNull(nextDir, "nextDir");
+
+        Files.createDirectories(nextDir);
+        long t0 = System.nanoTime();
+
+        Set<String> currentSstNames = new HashSet<>();
+        for (SstEntry e : currentManifest.ssts()) {
+            currentSstNames.add(e.name());
+        }
+
+        List<SstEntry> reusedSsts = new ArrayList<>();
+        List<SstEntry> newSsts = new ArrayList<>();
+        for (SstEntry e : targetManifest.ssts()) {
+            if (currentSstNames.contains(e.name())) {
+                reusedSsts.add(e);
+            } else {
+                newSsts.add(e);
+            }
+        }
+
+        int linkOk = 0;
+        int linkFallback = 0;
+        for (SstEntry e : reusedSsts) {
+            Path src = liveDir.resolve(e.name());
+            Path dst = nextDir.resolve(e.name());
+            if (!Files.exists(src)) {
+                LOG.warn("reused SST {} missing from liveDir, will download", e.name());
+                newSsts.add(e);
+                continue;
+            }
+            try {
+                Files.createLink(dst, src);
+                linkOk++;
+            } catch (IOException | UnsupportedOperationException linkEx) {
+                LOG.warn("hard-link failed for {} ({}); falling back to copy", e.name(), linkEx.toString());
+                Files.copy(src, dst);
+                linkFallback++;
+            }
+        }
+
+        List<CompletableFuture<Void>> futures = new ArrayList<>(newSsts.size() + targetManifest.metaFiles().size());
+        for (SstEntry e : newSsts) {
+            futures.add(CompletableFuture.runAsync(() -> {
+                try {
+                    acquireBandwidth(e.sizeBytes());
+                    store.downloadSst(e.name(), nextDir.resolve(e.name()));
+                } catch (IOException ex) {
+                    throw new UncheckedIOException(ex);
+                }
+            }, executor));
+        }
+        for (MetaEntry e : targetManifest.metaFiles()) {
+            futures.add(CompletableFuture.runAsync(() -> {
+                try {
+                    acquireBandwidth(e.sizeBytes());
+                    store.downloadMetaFile(targetManifest.version(), e.name(), nextDir.resolve(e.name()));
+                } catch (IOException ex) {
+                    throw new UncheckedIOException(ex);
+                }
+            }, executor));
+        }
+        for (CompletableFuture<Void> f : futures) {
+            f.join();
+        }
+
+        long bytesNew = 0;
+        for (SstEntry e : newSsts) {
+            bytesNew += e.sizeBytes();
+        }
+
+        long totalNs = System.nanoTime() - t0;
+        int sstReused = linkOk + linkFallback;
+        metrics.checkpointRefreshed(
+                targetManifest,
+                currentManifest.version(),
+                totalNs,
+                newSsts.size(),
+                sstReused,
+                linkOk,
+                linkFallback,
+                bytesNew
+        );
+        LOG.info("refreshed v{} -> v{} in {} ms (sstNew={}, sstReused={}, linkOk={}, linkFallback={}, bytesNew={})",
+                currentManifest.version(), targetManifest.version(), totalNs / 1_000_000,
+                newSsts.size(), sstReused, linkOk, linkFallback, bytesNew);
+        return targetManifest;
     }
 
     @Override

@@ -1,0 +1,59 @@
+1. Object store + pull-on-cold-start (what you have).
+  References: Apache Druid (segments in deep storage, downloaded by historicals), Facebook's ZippyDB, our design. Best when: you want an audit-friendly archive, simple fan-out, decoupled durability. Worst when: cold-start
+  latency dominates or you're paying egress per replica.
+
+  2. Block-level cloud snapshots.
+  EBS Snapshot + Fast Snapshot Restore is the AWS native answer. Builder writes to an EBS volume, snapshots it, server boots from a fast-restored snapshot — blocks fetch lazily as touched. References: most managed
+  RDS/Elasticache restore flows under the hood, heavy in stateful k8s shops via Velero/StatefulSet+VolumeSnapshot. Pros: no application code, works with any DB. Cons: granularity is whole volume (no per-shard partial restore),
+  AWS-specific (GCP/Azure have analogues but you're locked to one), FSR has provisioning lead time.
+
+  3. DaemonSet + hostPath (the one you mentioned).
+  One pod per node downloads + manages checkpoints to a local NVMe path; serving pods on that node mount the same hostPath read-only. Used internally at several feature-store-shaped places (Pinterest, Uber DocStore-adjacent,
+  LinkedIn for some indexed tiers). Wins:
+  - One S3 pull per node, not per replica → 4× server replicas per shard means 4× less S3 load.
+  - Zero download on pod replacement on the same node.
+  - The DaemonSet can prefetch the next checkpoint version in background, keeping a "warm next" ready — server pod restart is then a directory swap.
+
+  Cost: an extra component, node affinity scheduling so server pods land on nodes that have their shard, and hostPath cleanup discipline. Most pragmatic upgrade from your current design without changing the core model.
+
+  4. CSI driver that's checkpoint-aware.
+  Same idea as #3 but cleaner: write a CSI volume plugin that knows about your manifest format and presents a "checkpoint-as-volume" PVC. Server pods PVC-mount and the plugin handles fetch + mount. References: AWS Mountpoint
+  for S3 CSI driver does roughly this for raw S3 prefixes; Linkerd's spire-csi for secrets uses the pattern. More upfront engineering than #3, much cleaner ops surface long-term. Worth doing if you have multiple use cases that
+  want the "checkpoint as filesystem" abstraction.
+
+  5. Peer-to-peer / replicated DB engine.
+  The "no central index store" answer. Pinterest's Rocksplicator is the canonical open-source reference — leader/follower replication for RocksDB SSTs over a custom protocol. LinkedIn's Espresso, Uber's Schemaless/DocStore,
+  Cassandra's bootstrap-from-peer all live in this family. Wins: no object store needed at all, faster catch-up because peers stream directly to each other, fan-out scales with cluster size. Costs: substantially more code
+  (you're now operating a replication protocol), the DB engine has to know about the replication topology, no time-travel archive unless you bolt one on. Right answer if you have many replicas per shard and S3 fan-out becomes
+  the bottleneck — wrong answer if your operator team is small.
+
+  6. Pull-through cache / lazy hydration.
+  Mount S3 directly via AWS Mountpoint for S3 or front it with Alluxio; the server opens RocksDB on the mount and blocks fetch on demand. Server starts serving in seconds, first queries are slow until working set warms.
+  References: Pinterest experiments with this for some online tiers, growing usage at smaller shops. Wins: time-to-first-query collapses from minutes to seconds, you don't pay for cold blocks. Costs: tail latency is variable
+  for a long warm-up period, RocksDB doesn't love non-local block storage (lots of seeks), and you need predictable working-set behavior to make this safe.
+
+  7. Offline bulk-build + atomic bulk-load.
+  Apache HBase BulkLoad is the textbook reference: build HFiles in a Hadoop/Spark job, then HBase atomically links them into the live region. LinkedIn Espresso does the same shape: Spark builds Voldemort/Espresso segments
+  overnight, serving nodes load them. Wins: builders can be ephemeral batch jobs (no StatefulSet), perfect repeatability. Costs: index is only as fresh as the batch cadence (hours, not minutes). Wrong fit for your
+  continuous-Kafka-driven case but worth knowing — some shops do hybrid (batch nightly + Kafka tail).
+
+  8. Streaming materialized views in the DB.
+  Materialize, RisingWave, ClickHouse with materialized views — the index is a continuously-maintained query result, no separate "build → ship → load" cycle. References: emerging but still rare at TB-feature-store scale. Wins:
+  no checkpoints, no restore, the freshness story is built-in. Costs: you adopt a new database engine. Probably not what you want for a 1TB feature serve, but the pattern is worth knowing because it questions whether you need
+  the build/ship/restore loop at all.
+
+  9. CDN / swarm distribution for very large fleets.
+  Facebook's TorrentFS, Twitter's Murder (BitTorrent for code deploys), CloudFront in front of S3. Only matters when you have hundreds of replicas pulling the same shard simultaneously and S3 per-prefix limits start biting.
+  Almost certainly overkill for your fleet size; mention so you know it exists.
+
+  For your specific case — 1 TB feature shards, K servers per shard via StatefulSet, Kafka source-of-truth — the realistic next steps from where you are now:
+
+  - DaemonSet + hostPath is the most pragmatic upgrade if cold-start fan-out becomes painful. You keep S3 as the durable archive, but each node pulls once instead of each pod. Amortizes both bandwidth and S3 PUT/GET cost, and
+  gives you the "pre-warmed next checkpoint" property which is the biggest practical win.
+  - EBS Fast Snapshot Restore if you're staying AWS-only and willing to give up cross-region portability — fastest cold-start with the least application code (your current code becomes restore-from-snapshot instead of
+  download-from-S3).
+  - Rocksplicator if you eventually scale to many replicas per shard (>10) and S3 stops being free fan-out. Big architectural commitment; don't do this preemptively.
+  - Mountpoint/Alluxio lazy hydration if your access pattern is sufficiently skewed (small hot working set inside a large state) that warm-up is acceptable.
+
+  For the benchmark you're about to run, S3 + parallel download + bandwidth limiter is the right starting point — that's what you can compare against. If the cold-start number isn't acceptable, DaemonSet+hostPath is the
+  smallest delta from your current code that buys you most of the win without going full replication-protocol.

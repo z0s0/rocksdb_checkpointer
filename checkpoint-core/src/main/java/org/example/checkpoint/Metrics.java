@@ -52,6 +52,31 @@ public final class Metrics {
         emit(evt);
     }
 
+    public void checkpointRefreshed(
+            Manifest target,
+            long fromVersion,
+            long totalNs,
+            int sstNew,
+            int sstReused,
+            int linkOk,
+            int linkFallback,
+            long bytesNew
+    ) {
+        Map<String, Object> evt = new LinkedHashMap<>();
+        evt.put("event", "checkpoint_refreshed");
+        evt.put("fromVersion", fromVersion);
+        evt.put("toVersion", target.version());
+        evt.put("totalMs", totalNs / 1_000_000);
+        evt.put("sstNew", sstNew);
+        evt.put("sstReused", sstReused);
+        evt.put("linkOk", linkOk);
+        evt.put("linkFallbackCopy", linkFallback);
+        evt.put("bytesNew", bytesNew);
+        evt.put("bytesTotal", target.totalSizeBytes());
+        evt.put("offsets", target.offsets());
+        emit(evt);
+    }
+
     private void emit(Map<String, Object> evt) {
         try {
             LOG.info("{}", json.writeValueAsString(evt));
