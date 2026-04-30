@@ -1,0 +1,75 @@
+  Why C++ + Java? (data plane vs control plane)
+
+  The split is data plane in C++, control plane in Java — they communicate over Thrift RPC and ZooKeeper, not a shared process.
+
+  C++ side — the data plane (rocksdb_replicator/, rocksdb_admin/, cdc_admin/):
+  - rocksdb_replicator/ — the replication library. Wraps a RocksDB instance with a "role" (Leader/Follower/Observer) and a Thrift service. Followers pull by sequence-number range from the leader (replicator.thrift,
+  replicated_db.cpp). Three modes:
+    - mode 0 = async (ack on local commit)
+    - mode 1 = semi-sync (ack once one follower's TCP buffer accepts)
+    - mode 2 = sync (ack once one follower commits)
+  - rocksdb_admin/ — per-host admin server. admin_handler.cpp exposes RPCs for: opening/closing DBs, role transitions, S3 SST ingestion (AddS3SstFilesToDB → rocksdb::DB::IngestExternalFile), HDFS backup/restore, and a Kafka
+  consumer (librdkafka 1.4.0) that writes messages into WriteBatch.
+  - cdc_admin/ — same shape but for change-data-capture observers (replicate but don't count toward write quorum; replicator.thrift line ~63).
+
+  C++ is here because the hot path is RocksDB + fbthrift + folly executors, and Pinterest already had a folly/fbthrift stack. The replication protocol, the SST ingest path, and stat counters all need to be tight with RocksDB's
+  C++ API.
+
+  Java side — the control plane (cluster_management/):
+  - Participant.java — runs on every C++ host as a sidecar JVM. Registers with Apache Helix and listens for state-transition messages ("become Leader of shard 17"). On a transition it RPCs the local C++ admin server to actually
+   flip the DB's role.
+  - Spectator.java + ConfigGenerator.java — runs Helix in spectator mode, watches the ExternalView, and writes a shard_map.json (host:port → [shard:role]) to ZK or a file.
+  - ClientShardMapAgent.java — sidecar on client hosts that watches the shard map so clients route directly to the current leader. No proxy hop.
+  - State-model factories (*StateModelFactory.java) — the bridge from Helix's abstract states to concrete C++ admin-RPC sequences.
+
+  Java is here because Helix is a Java library and there's no comparable C++ cluster manager.
+
+  Topologies and when to use which
+
+  Six state models, all in cluster_management/src/main/java/com/pinterest/rocksplicator/:
+
+  ┌──────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────┐
+  │   State model    │                                         Use case                                          │                                   Notes                                   │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ MasterSlave      │ OG mode. 1 master + N slaves per shard, no quorum.                                        │ Master failure needs Helix to elect; semi-sync mode tolerates slave loss. │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ LeaderFollower   │ Newer, quorum-aware variant of MasterSlave.                                               │ Successor; prefer this over MasterSlave for new work.                     │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ OnlineOffline    │ Stateless / read-only DBs (e.g. snapshot-served).                                         │ No replication state — just "is this node serving this shard."            │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ Bootstrap        │ Cold-start sequence: ingest SSTs from S3, then tail Kafka to EOF, then transition Online. │ This is the model closest to your AdServer use case.                      │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ Cache            │ Read-only cache nodes.                                                                    │ No durability assumptions.                                                │
+  ├──────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤
+  │ CdcLeaderStandby │ CDC fan-out (observers stream changes elsewhere).                                         │ Used to feed downstream pipelines, not for serving.                       │
+  └──────────────────┴───────────────────────────────────────────────────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────┘
+
+  Request routing: clients consult the shard map and call the leader/master directly via fbthrift. Replication is leader→follower pull, never broadcast.
+
+  Production-readiness assessment for your case
+
+  Hard signals against adopting rocksplicator as a base:
+
+  1. Archived March 2024. The most recent commit on master is the archival notice (cb9bc06). No security patches, no dependency bumps coming.
+  2. Toolchain is stuck. docker/Dockerfile builds on an old Ubuntu image, pins folly to a 2018-era commit, rocksdb v5.7.fb, librdkafka 1.4.0. RocksDB is on 9.x now. Bringing this forward is a multi-week project before you write
+   a line of feature code.
+  3. Helix is a real adoption. You'd be running a ZK ensemble + Helix controller + the Java sidecar on every node, just for cluster coordination. That's three new operational surfaces.
+  4. C++ Thrift + folly + fbthrift toolchain. Your rocksdb_checkpoint is Java 21 / Maven / single-binary-per-process. Mixing in a C++ fbthrift service on every ad-server is a step change in build/deploy/debug complexity.
+  5. The replication model doesn't match what you need. Rocksplicator replicates writes master→slaves over Thrift. You don't have writes — you have a Kafka feed, and you want every ad-server to materialize its assigned shard
+  from that feed. Rocksplicator's Bootstrap model does this, but it's the minor part of the system; the leader/follower replication is the major part and is dead weight for you.
+
+  The architectural overlap you'd actually use is small: SST-ingestion-from-S3 and Kafka-tail-to-EOF. You already have both in rocksdb_checkpoint (CheckpointRestorer for SSTs, KafkaConsumerLoop for the tail). What rocksplicator
+   adds on top is leader election, write replication, and Helix-managed failover — none of which apply when the source of truth is Kafka and ad-servers are read-only feature replicas.
+
+  My judgement: don't adapt rocksplicator. Keep building on rocksdb_checkpoint. Your problem statement is "Kafka-sharded build → S3 checkpoints → ad-servers restore + tail," which is exactly what state-builder + feature-server
+  already do. The CLAUDE.md in rocksdb_checkpoint even calls out the right tradeoffs (StatefulSet ordinal = shard, assign() not subscribe(), manifest offsets are the resume contract).
+
+  What rocksplicator could teach you, worth borrowing without taking the dependency:
+  - The shard_map.json in ZK + sidecar agent pattern for routing clients to ad-server replicas. Useful when a shard's set of healthy replicas changes; cheaper than service discovery on every request.
+  - AddS3SstFilesToDB semantics — atomic SST ingest behind a single admin RPC, with state-model gating so a node doesn't serve until ingestion + Kafka catch-up is complete. The PoC feature-server should adopt the same "don't go
+   ready until tail caught up" guard before any real load test.
+  - Replication-mode taxonomy (async/semi-sync/sync) — the Bootstrap→Online transition pattern is the closest analog to what you want, and it's worth re-reading BootstrapStateModelFactory.java once before you finalize your
+  readiness-gate logic.
+
+  One concrete thing your design has that rocksplicator's Bootstrap model lacks: incremental, deduplicated S3 checkpoints. Rocksplicator's bulk-load is "ingest a snapshot then tail Kafka forever." Your manifest-based diffing
+  means recovery and re-deploy are bounded by the delta, not the DB size. That's a strict win for the ad-server fleet where rolling restarts dominate the failure model.
